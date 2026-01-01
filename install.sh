@@ -27,6 +27,9 @@ MANIFESTS_DIR="${SCRIPT_DIR}/manifests"
 STORAGE_BASE="/mnt/apps"
 REQUIRED_APPS=("portainer" "heimdall" "n8n")
 
+# Interactive mode - set to "false" to skip prompts (auto-yes)
+INTERACTIVE_MODE="${INTERACTIVE_MODE:-true}"
+
 ################################################################################
 # COLOR CODES
 ################################################################################
@@ -67,6 +70,39 @@ print_warning() {
 
 print_step() {
     echo -e "${BLUE}▶ $1${NC}"
+}
+
+################################################################################
+# USER INPUT FUNCTIONS
+################################################################################
+
+# Ask user for confirmation (y/N with default to Yes)
+ask_user() {
+    local prompt=$1
+    local default=${2:-y}  # Default to 'y' if not specified
+    
+    # Skip prompt if not in interactive mode
+    if [ "${INTERACTIVE_MODE}" != "true" ]; then
+        return 0  # Auto-yes
+    fi
+    
+    local response
+    if [ "$default" = "y" ]; then
+        read -p "${prompt} [Y/n] " response
+        response=${response:-y}  # Default to yes
+    else
+        read -p "${prompt} [y/N] " response
+        response=${response:-n}  # Default to no
+    fi
+    
+    case "$response" in
+        [yY][eE][sS]|[yY]) 
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 ################################################################################
@@ -117,7 +153,29 @@ check_cluster_connection() {
     
     print_success "Connected to Kubernetes cluster"
     
-    # Display cluster info
+    # Wait for nodes to be ready (handles K3s startup race condition)
+    print_step "Waiting for cluster nodes to be Ready..."
+    local max_wait=60
+    local waited=0
+    
+    while [ $waited -lt $max_wait ]; do
+        local ready_nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready" || echo "0")
+        local total_nodes=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+        
+        if [ "$ready_nodes" -gt 0 ] && [ "$ready_nodes" -eq "$total_nodes" ]; then
+            print_success "All ${ready_nodes} node(s) are Ready"
+            return 0
+        fi
+        
+        if [ $waited -eq 0 ]; then
+            print_info "Waiting for nodes to become Ready... (${waited}s/${max_wait}s)"
+        fi
+        
+        sleep 2
+        waited=$((waited + 2))
+    done
+    
+    print_warning "Nodes may not be fully ready yet, but continuing..."
     local node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
     print_info "Cluster has ${node_count} node(s)"
 }
@@ -233,6 +291,13 @@ apply_manifest() {
 }
 
 deploy_portainer() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy Portainer (Container Management UI)?"; then
+        print_info "Skipping Portainer deployment..."
+        echo ""
+        return 0
+    fi
+    
     print_step "Deploying Portainer (Container Management UI)..."
     
     # Check if already deployed
@@ -248,6 +313,13 @@ deploy_portainer() {
 }
 
 deploy_heimdall() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy Heimdall (Application Dashboard)?"; then
+        print_info "Skipping Heimdall deployment..."
+        echo ""
+        return 0
+    fi
+    
     print_step "Deploying Heimdall (Application Dashboard)..."
     
     # Verify storage
@@ -268,6 +340,13 @@ deploy_heimdall() {
 }
 
 deploy_n8n() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy n8n (Workflow Automation)?"; then
+        print_info "Skipping n8n deployment..."
+        echo ""
+        return 0
+    fi
+    
     print_step "Deploying n8n (Workflow Automation)..."
     
     # Verify storage
@@ -288,6 +367,13 @@ deploy_n8n() {
 }
 
 deploy_web_demo() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy web-demo applications?"; then
+        print_info "Skipping web-demo deployment..."
+        echo ""
+        return 0
+    fi
+    
     print_step "Deploying web-demo applications..."
     
     if [ ! -d "${MANIFESTS_DIR}/web-demo" ]; then
@@ -295,14 +381,18 @@ deploy_web_demo() {
         return 0
     fi
     
-    local demo_manifests=$(find "${MANIFESTS_DIR}/web-demo" -name "*.yaml" -o -name "*.yml")
+    # Use array to safely handle filenames with spaces
+    local demo_manifests=()
+    while IFS= read -r -d '' manifest; do
+        demo_manifests+=("$manifest")
+    done < <(find "${MANIFESTS_DIR}/web-demo" -name "*.yaml" -o -name "*.yml" -print0)
     
-    if [ -z "${demo_manifests}" ]; then
+    if [ ${#demo_manifests[@]} -eq 0 ]; then
         print_info "No web-demo manifests found, skipping..."
         return 0
     fi
     
-    for manifest in ${demo_manifests}; do
+    for manifest in "${demo_manifests[@]}"; do
         local filename=$(basename "${manifest}")
         apply_manifest "${manifest}" "web-demo/${filename}"
     done
@@ -313,12 +403,21 @@ deploy_web_demo() {
 deploy_all_manifests() {
     print_banner "DEPLOYING MANIFESTS"
     
+    if [ "${INTERACTIVE_MODE}" = "true" ]; then
+        print_info "Interactive mode enabled. You will be asked before deploying each application."
+        print_info "Core infrastructure checks have already passed automatically."
+        echo ""
+    else
+        print_info "Auto-deployment mode (all applications will be deployed)."
+        echo ""
+    fi
+    
     deploy_portainer
     deploy_heimdall
     deploy_n8n
     deploy_web_demo
     
-    print_success "All manifests deployed!"
+    print_success "Deployment process completed!"
 }
 
 ################################################################################

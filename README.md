@@ -64,7 +64,7 @@ The example configurations in this repository use:
 
 ## Installation
 
-### Quick Start
+### Quick Start (Interactive Mode)
 
 **After reviewing the security section above**, run the installation script:
 
@@ -72,6 +72,34 @@ The example configurations in this repository use:
 chmod +x install.sh
 ./install.sh
 ```
+
+The script will run in **interactive mode** by default, asking you for confirmation before deploying each application:
+
+- ✅ **Core infrastructure checks** run automatically (root privileges, kubectl, cluster connectivity, storage)
+- ❓ **Application deployments** require your confirmation:
+  - Portainer (Container Management UI)
+  - Heimdall (Application Dashboard)
+  - n8n (Workflow Automation)
+  - Web Demo (Sample Application)
+
+**Example interaction:**
+```
+Deploy Portainer (Container Management UI)? [Y/n] y
+✓ Portainer deployed successfully
+
+Deploy Heimdall (Application Dashboard)? [Y/n] n
+ℹ Skipping Heimdall deployment...
+```
+
+### Non-Interactive Mode
+
+To deploy all applications automatically without prompts:
+
+```bash
+INTERACTIVE_MODE=false ./install.sh
+```
+
+This is useful for automation scripts or CI/CD pipelines.
 
 ### Manual Installation
 
