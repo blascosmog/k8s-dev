@@ -3,14 +3,14 @@
 ################################################################################
 # k8s-dev Installation Script
 # 
-# This script deploys Kubernetes manifests for a development environment.
-# It performs pre-flight checks, creates necessary directories, and deploys
-# applications in a safe, idempotent manner.
+# This script deploys Kubernetes manifests and Helm charts for a complete
+# development environment. It performs pre-flight checks, creates necessary
+# directories, and deploys applications in a safe, idempotent manner.
 #
 # Requirements:
 # - Root/sudo access
 # - Kubernetes cluster (K3s recommended)
-# - kubectl configured
+# - kubectl and helm (auto-installed if missing)
 # - Storage at /mnt/apps (LVM recommended)
 ################################################################################
 
@@ -24,11 +24,15 @@ set -o pipefail # Exit on pipe failure
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="${SCRIPT_DIR}/manifests"
+HELM_VALUES_DIR="${SCRIPT_DIR}/helm-values"
 STORAGE_BASE="/mnt/apps"
 REQUIRED_APPS=("portainer" "heimdall" "n8n")
 
 # Interactive mode - set to "false" to skip prompts (auto-yes)
 INTERACTIVE_MODE="${INTERACTIVE_MODE:-true}"
+
+# Track deployed services for summary
+declare -A DEPLOYED_SERVICES
 
 ################################################################################
 # COLOR CODES
@@ -141,6 +145,23 @@ check_kubectl() {
     print_success "kubectl found: $(kubectl version --client --short 2>/dev/null || echo 'installed')"
 }
 
+check_helm() {
+    print_step "Checking for Helm..."
+    
+    if ! command -v helm &> /dev/null; then
+        print_warning "Helm not found. Installing Helm 3..."
+        
+        if curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; then
+            print_success "Helm installed successfully"
+        else
+            print_error "Failed to install Helm"
+            exit 1
+        fi
+    else
+        print_success "Helm found: $(helm version --short 2>/dev/null || echo 'installed')"
+    fi
+}
+
 check_cluster_connection() {
     print_step "Checking cluster connectivity..."
     
@@ -226,6 +247,7 @@ run_preflight_checks() {
     
     check_root
     check_kubectl
+    check_helm
     check_cluster_connection
     check_storage
     check_manifests
@@ -304,9 +326,12 @@ deploy_portainer() {
     if is_deployed "deployment" "portainer" "portainer"; then
         print_info "Portainer is already deployed (idempotent)"
         print_info "To redeploy, delete it first: kubectl delete -f manifests/portainer-admin.yaml"
+        DEPLOYED_SERVICES[portainer]="deployed"
     else
-        apply_manifest "${MANIFESTS_DIR}/portainer-admin.yaml" "Portainer"
-        print_info "Access Portainer at: http://YOUR_SERVER_IP:30777"
+        if apply_manifest "${MANIFESTS_DIR}/portainer-admin.yaml" "Portainer"; then
+            DEPLOYED_SERVICES[portainer]="deployed"
+            print_info "Access Portainer at: http://YOUR_SERVER_IP:30777"
+        fi
     fi
     
     echo ""
@@ -331,9 +356,12 @@ deploy_heimdall() {
     
     if is_deployed "deployment" "heimdall-manual" "default"; then
         print_info "Heimdall is already deployed (idempotent)"
+        DEPLOYED_SERVICES[heimdall]="deployed"
     else
-        apply_manifest "${MANIFESTS_DIR}/heimdall-manual.yaml" "Heimdall"
-        print_info "Access Heimdall at: http://YOUR_SERVER_IP:30088"
+        if apply_manifest "${MANIFESTS_DIR}/heimdall-manual.yaml" "Heimdall"; then
+            DEPLOYED_SERVICES[heimdall]="deployed"
+            print_info "Access Heimdall at: http://YOUR_SERVER_IP:30088"
+        fi
     fi
     
     echo ""
@@ -358,9 +386,12 @@ deploy_n8n() {
     
     if is_deployed "deployment" "n8n" "default"; then
         print_info "n8n is already deployed (idempotent)"
+        DEPLOYED_SERVICES[n8n]="deployed"
     else
-        apply_manifest "${MANIFESTS_DIR}/n8n-deployment.yaml" "n8n"
-        print_info "Access n8n at: http://YOUR_SERVER_IP:30080"
+        if apply_manifest "${MANIFESTS_DIR}/n8n-deployment.yaml" "n8n"; then
+            DEPLOYED_SERVICES[n8n]="deployed"
+            print_info "Access n8n at: http://YOUR_SERVER_IP:30080"
+        fi
     fi
     
     echo ""
@@ -394,8 +425,133 @@ deploy_web_demo() {
     
     for manifest in "${demo_manifests[@]}"; do
         local filename=$(basename "${manifest}")
-        apply_manifest "${manifest}" "web-demo/${filename}"
+        if apply_manifest "${manifest}" "web-demo/${filename}"; then
+            DEPLOYED_SERVICES[web-demo]="deployed"
+        fi
     done
+    
+    echo ""
+}
+
+deploy_netdata() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy Netdata (Real-time Monitoring)?"; then
+        print_info "Skipping Netdata deployment..."
+        echo ""
+        return 0
+    fi
+    
+    print_step "Deploying Netdata (Real-time Monitoring)..."
+    
+    # Check if already installed
+    if command -v netdata &> /dev/null || systemctl is-active --quiet netdata 2>/dev/null; then
+        print_info "Netdata is already installed (idempotent)"
+        DEPLOYED_SERVICES[netdata]="deployed"
+        echo ""
+        return 0
+    fi
+    
+    # Install Netdata
+    print_info "Downloading and installing Netdata..."
+    if wget -O /tmp/netdata-kickstart.sh https://get.netdata.cloud/kickstart.sh 2>/dev/null && \
+       sh /tmp/netdata-kickstart.sh --stable-channel --disable-telemetry --non-interactive --dont-wait; then
+        print_success "Netdata installed successfully"
+        DEPLOYED_SERVICES[netdata]="deployed"
+        print_info "Access Netdata at: http://YOUR_SERVER_IP:19999"
+    else
+        print_error "Failed to install Netdata"
+    fi
+    
+    # Cleanup
+    rm -f /tmp/netdata-kickstart.sh
+    echo ""
+}
+
+deploy_crowdsec() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy CrowdSec (Security Monitoring)?"; then
+        print_info "Skipping CrowdSec deployment..."
+        echo ""
+        return 0
+    fi
+    
+    print_step "Deploying CrowdSec (Security Monitoring)..."
+    
+    # Check if values file exists
+    if [ ! -f "${HELM_VALUES_DIR}/crowdsec-values.yaml" ]; then
+        print_error "CrowdSec values file not found: ${HELM_VALUES_DIR}/crowdsec-values.yaml"
+        echo ""
+        return 1
+    fi
+    
+    # Add Helm repo
+    print_info "Adding CrowdSec Helm repository..."
+    helm repo add crowdsec https://crowdsecurity.github.io/helm-charts 2>/dev/null || true
+    helm repo update crowdsec
+    
+    # Check if already deployed
+    if helm list -n crowdsec 2>/dev/null | grep -q "crowdsec"; then
+        print_info "CrowdSec is already deployed (idempotent)"
+        DEPLOYED_SERVICES[crowdsec]="deployed"
+    else
+        print_info "Installing CrowdSec with local values..."
+        if helm upgrade --install crowdsec crowdsec/crowdsec \
+            --create-namespace \
+            -n crowdsec \
+            -f "${HELM_VALUES_DIR}/crowdsec-values.yaml" \
+            --wait \
+            --timeout 5m; then
+            print_success "CrowdSec deployed successfully"
+            DEPLOYED_SERVICES[crowdsec]="deployed"
+        else
+            print_error "Failed to deploy CrowdSec"
+        fi
+    fi
+    
+    echo ""
+}
+
+deploy_adguard() {
+    # Ask for user confirmation
+    if ! ask_user "Deploy AdGuard Home (DNS Filtering)?"; then
+        print_info "Skipping AdGuard Home deployment..."
+        echo ""
+        return 0
+    fi
+    
+    print_step "Deploying AdGuard Home (DNS Filtering)..."
+    
+    # Check if values file exists
+    if [ ! -f "${HELM_VALUES_DIR}/adguard-values.yaml" ]; then
+        print_error "AdGuard values file not found: ${HELM_VALUES_DIR}/adguard-values.yaml"
+        echo ""
+        return 1
+    fi
+    
+    # Add Helm repo
+    print_info "Adding AdGuard Home Helm repository..."
+    helm repo add gabe565 https://charts.gabe565.com 2>/dev/null || true
+    helm repo update gabe565
+    
+    # Check if already deployed
+    if helm list -n adguard 2>/dev/null | grep -q "adguard"; then
+        print_info "AdGuard Home is already deployed (idempotent)"
+        DEPLOYED_SERVICES[adguard]="deployed"
+    else
+        print_info "Installing AdGuard Home with local values..."
+        if helm upgrade --install adguard gabe565/adguard-home \
+            --create-namespace \
+            -n adguard \
+            -f "${HELM_VALUES_DIR}/adguard-values.yaml" \
+            --wait \
+            --timeout 5m; then
+            print_success "AdGuard Home deployed successfully"
+            DEPLOYED_SERVICES[adguard]="deployed"
+            print_info "Access AdGuard at: http://YOUR_SERVER_IP:3000"
+        else
+            print_error "Failed to deploy AdGuard Home"
+        fi
+    fi
     
     echo ""
 }
@@ -412,10 +568,18 @@ deploy_all_manifests() {
         echo ""
     fi
     
+    # Deploy Kubernetes manifests
     deploy_portainer
     deploy_heimdall
     deploy_n8n
     deploy_web_demo
+    
+    # Deploy system monitoring
+    deploy_netdata
+    
+    # Deploy Helm charts
+    deploy_crowdsec
+    deploy_adguard
     
     print_success "Deployment process completed!"
 }
@@ -438,35 +602,92 @@ show_deployment_status() {
 }
 
 show_summary() {
-    print_banner "INSTALLATION COMPLETE!"
+    print_banner "DEPLOYMENT COMPLETE - ACCESS DASHBOARD"
     
-    print_success "All applications have been deployed successfully"
+    # Detect server IP
+    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    if [ -z "$SERVER_IP" ]; then
+        SERVER_IP="YOUR_SERVER_IP"
+    fi
+    
+    print_success "Server LAN IP: ${SERVER_IP}"
     echo ""
     
-    print_info "Next Steps:"
-    echo "  1. Wait for all pods to be in 'Running' state:"
-    echo "     kubectl get pods --all-namespaces"
-    echo ""
-    echo "  2. Access your applications (replace YOUR_SERVER_IP with your actual IP):"
-    echo "     • Portainer:  http://YOUR_SERVER_IP:30777"
-    echo "     • Heimdall:   http://YOUR_SERVER_IP:30088"
-    echo "     • n8n:        http://YOUR_SERVER_IP:30080"
-    echo "     • Web Demo:   http://YOUR_SERVER_IP:30090"
-    echo ""
+    # Build service table dynamically
+    local has_services=false
     
-    print_info "Storage locations:"
-    echo "     All application data is stored at: ${STORAGE_BASE}"
-    echo ""
+    echo "SERVICE           URL"
+    echo "----------------- --------------------------------------------"
     
+    # Check Portainer
+    if [ "${DEPLOYED_SERVICES[portainer]:-}" = "deployed" ]; then
+        local portainer_port=$(kubectl get svc -n portainer portainer -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "30777")
+        if [ -n "$portainer_port" ]; then
+            printf "%-17s http://%s:%s\n" "Portainer" "$SERVER_IP" "$portainer_port"
+            has_services=true
+        fi
+    fi
+    
+    # Check Heimdall
+    if [ "${DEPLOYED_SERVICES[heimdall]:-}" = "deployed" ]; then
+        local heimdall_port=$(kubectl get svc heimdall-svc-manual -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "30088")
+        if [ -n "$heimdall_port" ]; then
+            printf "%-17s http://%s:%s\n" "Heimdall" "$SERVER_IP" "$heimdall_port"
+            has_services=true
+        fi
+    fi
+    
+    # Check n8n
+    if [ "${DEPLOYED_SERVICES[n8n]:-}" = "deployed" ]; then
+        local n8n_port=$(kubectl get svc n8n -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "30080")
+        if [ -n "$n8n_port" ]; then
+            printf "%-17s http://%s:%s\n" "n8n" "$SERVER_IP" "$n8n_port"
+            has_services=true
+        fi
+    fi
+    
+    # Check Web Demo
+    if [ "${DEPLOYED_SERVICES[web-demo]:-}" = "deployed" ]; then
+        local webdemo_port=$(kubectl get svc web-demo-svc -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "30090")
+        if [ -n "$webdemo_port" ]; then
+            printf "%-17s http://%s:%s\n" "Web Demo" "$SERVER_IP" "$webdemo_port"
+            has_services=true
+        fi
+    fi
+    
+    # Check AdGuard (hostNetwork, port 3000)
+    if [ "${DEPLOYED_SERVICES[adguard]:-}" = "deployed" ]; then
+        printf "%-17s http://%s:3000\n" "AdGuard Home" "$SERVER_IP"
+        has_services=true
+    fi
+    
+    # Check Netdata (hostNetwork, port 19999)
+    if [ "${DEPLOYED_SERVICES[netdata]:-}" = "deployed" ]; then
+        printf "%-17s http://%s:19999\n" "Netdata" "$SERVER_IP"
+        has_services=true
+    fi
+    
+    # Check CrowdSec (no web UI by default, just note it's running)
+    if [ "${DEPLOYED_SERVICES[crowdsec]:-}" = "deployed" ]; then
+        printf "%-17s %s\n" "CrowdSec" "(Running - CLI: cscli)"
+        has_services=true
+    fi
+    
+    if [ "$has_services" = false ]; then
+        echo "No services were deployed."
+    fi
+    
+    echo ""
     print_info "Useful commands:"
-    echo "     kubectl get all --all-namespaces    # View all resources"
-    echo "     kubectl logs <pod-name>             # View pod logs"
-    echo "     kubectl describe pod <pod-name>     # Debug pod issues"
+    echo "  kubectl get all --all-namespaces    # View all resources"
+    echo "  kubectl get pods --all-namespaces   # Check pod status"
+    echo "  kubectl logs <pod-name>             # View pod logs"
+    echo "  helm list -A                        # List Helm releases"
     echo ""
     
     print_warning "Security Reminder:"
-    echo "     Remember to set strong passwords on first login!"
-    echo "     This is a development environment - do not expose to the internet."
+    echo "  Remember to set strong passwords on first login!"
+    echo "  This is a development environment - do not expose to the internet."
     echo ""
 }
 
