@@ -1,0 +1,61 @@
+# CrowdSec Helm Values
+# Security automation and threat detection
+
+agent:
+  # Leave the main acquisition list empty to avoid schema conflicts
+  acquisition: []
+  
+  # Use the additional acquisition list for reading local logs
+  additionalAcquisition:
+    - source: file
+      filenames:
+        - /var/log/auth.log
+        - /var/log/syslog
+      labels:
+        type: syslog
+  
+  # Environment variables to load detection collections for Linux and SSH
+  env:
+    - name: COLLECTIONS
+      value: "crowdsecurity/linux crowdsecurity/sshd"
+  
+  # Volume mounting: Connect /var/log from Host to Container
+  volumes:
+    - name: syslog-auth
+      hostPath:
+        path: /var/log/auth.log
+    - name: syslog-syslog
+      hostPath:
+        path: /var/log/syslog
+  
+  volumeMounts:
+    - name: syslog-auth
+      mountPath: /var/log/auth.log
+      readOnly: true
+    - name: syslog-syslog
+      mountPath: /var/log/syslog
+      readOnly: true
+
+# Local API Server configuration
+lapi:
+  # Environment variables for the Local API
+  env:
+    - name: ENROLL_KEY
+      value: ""  # Add your enrollment key if using CrowdSec Console
+    - name: ENROLL_INSTANCE_NAME
+      value: "k8s-dev-cluster"
+
+# Metrics and monitoring
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+
+# Resource limits
+resources:
+  limits:
+    memory: 256Mi
+    cpu: 200m
+  requests:
+    memory: 128Mi
+    cpu: 100m

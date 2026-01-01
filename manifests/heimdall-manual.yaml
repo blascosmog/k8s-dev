@@ -1,0 +1,87 @@
+---
+# PersistentVolume for Heimdall using hostPath
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: heimdall-pv-manual
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /mnt/apps/heimdall
+    type: DirectoryOrCreate
+
+---
+# PersistentVolumeClaim for Heimdall
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: heimdall-pvc-manual
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Deployment for Heimdall
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heimdall-manual
+  labels:
+    app: heimdall
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: heimdall
+  template:
+    metadata:
+      labels:
+        app: heimdall
+    spec:
+      containers:
+      - name: heimdall
+        image: lscr.io/linuxserver/heimdall:latest
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "Europe/Madrid"
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: heimdall-pvc-manual
+
+---
+# Service for Heimdall
+apiVersion: v1
+kind: Service
+metadata:
+  name: heimdall-svc-manual
+spec:
+  type: NodePort
+  selector:
+    app: heimdall
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30088

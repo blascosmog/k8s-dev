@@ -1,0 +1,101 @@
+---
+# ConfigMap with HTML content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Demo Web - K8s Dev</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                background: rgba(255, 255, 255, 0.1);
+                padding: 30px;
+                border-radius: 10px;
+                backdrop-filter: blur(10px);
+            }
+            h1 { margin-top: 0; }
+            .info { margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 Demo Web Application</h1>
+            <p class="info">Esta aplicación web ha sido desplegada automáticamente en Kubernetes.</p>
+            <p><strong>Tecnologías utilizadas:</strong></p>
+            <ul>
+                <li>Kubernetes (K3s)</li>
+                <li>Nginx Alpine</li>
+                <li>GitOps con Portainer</li>
+                <li>Persistencia con LVM</li>
+            </ul>
+            <p>✅ Estado: <strong>Desplegado y funcionando</strong></p>
+        </div>
+    </body>
+    </html>
+
+---
+# Deployment for demo web application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-demo
+  labels:
+    app: web-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-demo
+  template:
+    metadata:
+      labels:
+        app: web-demo
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html-volume
+          mountPath: /usr/share/nginx/html
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: html-volume
+        configMap:
+          name: web-html
+
+---
+# Service for demo web application
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-demo-svc
+spec:
+  type: NodePort
+  selector:
+    app: web-demo
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30090

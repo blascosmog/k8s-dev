@@ -1,0 +1,61 @@
+# AdGuard Home Helm Values
+# Network-wide ad blocking and DNS server
+
+# Use the host network for direct access to port 53
+hostNetwork: true
+
+# DNS policy to avoid loops with CoreDNS
+dns:
+  policy: ClusterFirstWithHostNet
+
+# Environment configuration: Force web interface to port 3000
+env:
+  - name: ADGUARD_HOME__HTTP__ADDRESS
+    value: "0.0.0.0:3000"
+
+# Persistence configuration (PVC)
+# Implements PersistentVolumeClaim for data persistence
+persistence:
+  config:
+    enabled: true
+    size: 1Gi
+    accessMode: ReadWriteOnce
+    accessModes:
+      - ReadWriteOnce
+  data:
+    enabled: true
+    size: 5Gi
+    accessMode: ReadWriteOnce
+    accessModes:
+      - ReadWriteOnce
+
+# Disable Service objects when using hostNetwork
+service:
+  main:
+    enabled: false
+  dns-tcp:
+    enabled: false
+  dns-udp:
+    enabled: false
+
+# Resource limits
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 500m
+  requests:
+    memory: 256Mi
+    cpu: 100m
+
+# DNS Configuration (configured via web UI)
+# Upstream DNS servers:
+# - Quad9 (9.9.9.9) - Security and malware blocking
+# - Cloudflare (1.1.1.1) - Speed and low latency
+# 
+# DNS Rewrites for local domain resolution:
+# - servidor.lab -> 192.168.1.200
+# - asus.casa -> 192.168.1.200
+#
+# Blocklists:
+# - AdGuard DNS filter (default)
+# - OISD Big (optional, comprehensive blocking)
